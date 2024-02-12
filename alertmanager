@@ -1,0 +1,45 @@
+additionalPrometheusRulesMap:
+          rule-name:
+            groups:
+            - name: alerting
+              rules:
+              - alert: TooManyPods
+                expr: count(kube_pod_info) > 1
+                for: 30s
+                labels:
+                  alert: cilium
+                annotations:
+                  cluster: NghisDevAKS 
+                  description: "{{ $labels.namespace }}/{{ $labels.pod }}"
+
+
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 2m
+    route:
+      group_by: ['alertname']
+      receiver: 'cluster-alerts'
+      routes:
+      - receiver: 'cluster-alerts'
+        matchers:
+          - alert =~ "cilium"
+        group_wait: 15s
+        group_interval: 30s
+        repeat_interval: 2m
+      - receiver: 'bordel'
+        group_wait: 4m
+        group_interval: 12h
+        repeat_interval: 24h
+    receivers: 
+      - name: 'cluster-alerts'
+        discord_configs:
+        - webhook_url: https://discord.com/api/webhooks/1080069729554800702/ilS-8pnIHg-oo_FoiIUc3VuVihp7hNp8kqy6Mq2yRr7CCrFRhkyurJgogcIt7UGpJVsf
+          title: '{{ template "discord.title" . }}'
+          message: '{{ template "discord.message" . }}'
+      - name: 'bordel'
+              discord_configs:
+              - webhook_url: https://discord.com/api/webhooks/1080212937932800010/sssssssssssssssssssssssssssssss
+                title: '{{ template "discord.title" . }}'
+                message: '{{ template "discord.message" . }}'
