@@ -1,0 +1,8 @@
+- alert: PvcAlmostFull
+          expr: round(100 * sum(kubelet_volume_stats_used_bytes) by (namespace, persistentvolumeclaim)  /sum(kubelet_volume_stats_capacity_bytes) by (namespace, persistentvolumeclaim)) > 10
+          for: 1m
+          labels:
+            alert: cilium
+          annotations:
+            cluster: dev
+            description: "{{ $labels.persistentvolumeclaim }} at {{ $value }}%"
