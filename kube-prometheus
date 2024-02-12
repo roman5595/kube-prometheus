@@ -1,0 +1,334 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack-dev
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    name: NghisDevAKS
+    namespace: monitoring
+  source:
+    repoURL: "https://prometheus-community.github.io/helm-charts"
+    chart: kube-prometheus-stack
+    targetRevision: 51.10.0
+    helm:
+      values: |
+        prometheus:
+          prometheusSpec:
+            podMonitorNamespaceSelector: {}
+            podMonitorSelector: {}
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleNamespaceSelector: {}
+            ruleSelector: {}
+            ruleSelectorNilUsesHelmValues: false
+            serviceMonitorNamespaceSelector: {}
+            serviceMonitorSelector: {}
+            serviceMonitorSelectorNilUsesHelmValues: false
+            enableRemoteWriteReceiver: true
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: default
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 30Gi
+
+        kube-state-metrics:
+          metricLabelsAllowlist:
+            - pods=[application.xxxke.sk/name]
+
+        additionalPrometheusRulesMap:
+          rule-name:
+            groups:
+            - name: alerting
+              rules:
+              - alert: PodCrashLooping
+                expr: sum(increase(kube_pod_container_status_restarts_total{namespace!~"tenant-2|kube-system"}[5m])) by (pod, namespace) * on (pod,namespace) group_right kube_pod_labels{label_application_xxxke_sk_name!=""} > 1
+                for: 30s
+                labels:
+                  alert: dev
+                annotations:
+                  cluster: NghisDevAKS 
+                  description: "{{ $labels.namespace }}/{{ $labels.pod }}"
+              - alert: HighMemoryUsage
+                expr: round(100 * max(
+                            container_memory_working_set_bytes{image!="", service!="monitoring-stack-kubelet" ,namespace!~"kube-system|tenant-2"} 
+                              / on (container, pod, namespace) group_left
+                            kube_pod_container_resource_limits{resource="memory"}
+                          ) by (container, pod, namespace)) > 90
+                for: 45m
+                labels:
+                  alert: memory
+                annotations:
+                  cluster: NghisDevAKS
+                  description: "{{ $labels.namespace }}/{{ $labels.pod }} at {{ $value }}%"
+              - alert: HighCpuUsage
+                expr: round(
+                        100 *
+                          sum(
+                            rate(container_cpu_usage_seconds_total{container!="POD" ,service!="monitoring-stack-kubelet" ,namespace!~"kube-system|tenant-2"}[5m])
+                          ) by (pod,namespace)
+                            /
+                          sum(
+                            kube_pod_container_resource_limits{container!="POD" ,resource="cpu"} > 0
+                          ) by (pod,namespace)
+                      ) > 90
+                for: 30m
+                labels:
+                  alert: cpu
+                annotations:
+                  cluster: NghisDevAKS
+                  description: "{{ $labels.namespace }}/{{ $labels.pod }} at {{ $value }}%"
+              - alert: PvcAlmostFull
+                expr: round(100 * sum(kubelet_volume_stats_used_bytes) by (namespace, persistentvolumeclaim)  /sum(kubelet_volume_stats_capacity_bytes) by (namespace, persistentvolumeclaim)) > 90 
+                for: 30m
+                labels:
+                  alert: pvc
+                annotations:
+                  cluster: NghisDevAKS
+                  description: "{{ $labels.persistentvolumeclaim }} at {{ $value }}%"
+              - alert: LagByConsumerGroup
+                expr: sum(kafka_consumergroup_lag{instance=~".+",topic!~"tenant_1.*"}) by (consumergroup, topic) > 1 
+                for: 5s
+                labels:
+                  alert: lag
+                annotations:
+                  cluster: NghisDevAKS
+                  description: "{{ $labels.consumergroup }}/{{ $labels.topic }} : {{ $value }}"
+              
+
+        alertmanager:
+          config:
+            global:
+              resolve_timeout: 2m
+            route:
+              group_by: ['alertname']
+              receiver: 'dev-alerts'
+              routes:
+              - receiver: 'dev-alerts'
+                matchers:
+                  - alert =~ "dev"
+                group_wait: 4m
+                group_interval: 10m
+                repeat_interval: 12h
+              - receiver: 'ops-alerts'
+                matchers: 
+                  - alert =~ "memory"
+                group_wait: 4m
+                group_interval: 1h
+                repeat_interval: 24h
+              - receiver: 'ops-alerts'
+                matchers: 
+                  - alert =~ "cpu"
+                group_wait: 4m
+                group_interval: 1h
+                repeat_interval: 24h
+              - receiver: 'ops-alerts'
+                matchers: 
+                  - alert =~ "pvc"
+                group_wait: 4m
+                group_interval: 30m
+                repeat_interval: 24h
+              - receiver: 'ops-alerts'
+                matchers: 
+                  - alert =~ "lag"
+                group_wait: 1m
+                group_interval: 2m
+                repeat_interval: 3m
+              - receiver: 'bordel'
+                group_wait: 4m
+                group_interval: 12h
+                repeat_interval: 24h
+            receivers: 
+            - name: 'dev-alerts'
+              discord_configs:
+              - webhook_url: https://discord.com/api/webhooks/1080210113312342047/
+                title: '{{ template "discord.title" . }}'
+                message: '{{ template "discord.message" . }}'
+            - name: 'ops-alerts'
+              discord_configs:
+              - webhook_url: https://discord.com/api/webhooks/1080210315079335976/
+                title: '{{ template "discord.title" . }}'
+                message: '{{ template "discord.message" . }}'
+            - name: 'bordel'
+              discord_configs:
+              - webhook_url: https://discord.com/api/webhooks/1080212937932800010/
+                title: '{{ template "discord.title" . }}'
+                message: '{{ template "discord.message" . }}'
+                
+            templates: 
+            - '/etc/alertmanager/config/template.tmpl'
+
+          templateFiles: 
+            template.tmpl: |-
+                {{ define "discord.title" }}
+                  :fire:[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}:fire:
+                {{ end }}
+                {{ "\n" }}
+                {{ "\n" }}
+                {{ define "discord.message" }}
+                {{ range .Alerts }}
+                  :mag:   {{ .Annotations.description }}
+                  :gear:   {{ .Annotations.cluster }}
+                {{ end }}
+                {{ end }}
+
+        grafana:
+          ingress:
+            enabled: true
+            ingressClassName: kong
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-test
+              konghq.com/https-redirect-status-code: "302"
+              konghq.com/protocols: https              
+              kubernetes.io/tls-acme: "true"
+            hosts:
+              - grafana.dev.nghis.xxxke.sk
+            tls:
+              - hosts:
+                  - grafana.dev.nghis.xxxke.sk
+                secretName: grafana.dev.nghis.xxxke.sk
+          dashboardProviders:
+            dashboardproviders.yaml:
+              apiVersion: 1
+              providers:
+              - name: 'default'
+                orgId: 1
+                folder: ''
+                type: file
+                disableDeletion: false
+                editable: true
+                options:
+                  path: /var/lib/grafana/dashboards/default
+              - name: 'nghis'
+                orgId: 1
+                folder: 'DevOps'
+                type: file
+                disableDeletion: false
+                options:
+                  path: /var/lib/grafana/dashboards/nghis
+
+          additionalDataSources:
+            - name: Loki
+              isDefault: false
+              access: proxy     
+              uid: loki 
+              type: loki
+              url: http://loki-stack:3100
+              version: 1
+              editable: true
+              jsonData:
+                derivedFields:
+                - datasourceUid: tempo
+                  matcherRegex: Uber-Trace-Id:\s*([^:\s]+)
+                  url: '$${__value.raw}'
+                  name: traceID
+                - datasourceUid: tempo
+                  matcherRegex: Status code\s*:\s*(\d+)
+                  name: statusCode
+            - name: Jaeger
+              isDefault: false
+              access: proxy    
+              uid: jaeger  
+              type: jaeger
+              url: http://jaeger-query.observability.svc:16686
+              version: 1
+            - name: Tempo
+              isDefault: false
+              access: proxy
+              uid: tempo
+              type: tempo
+              url: http://tempo:3100
+              editable: true
+              version: 1
+              jsonData:
+                tracesToLogs:
+                  datasourceUid: 'loki'
+                  filterByTraceID: true
+                  tags: ['job', 'instance', 'pod', 'namespace', 'http.status_code']
+                  mappedTags: [{ key: 'http.status_code', value: 'statusCode' }]
+                  mapTagNamesEnabled: true
+                tracesToMetrics:
+                  datasourceUid: 'prometheus'
+                httpMethod: GET
+                serviceMap:
+                  datasourceUid: 'prometheus'
+                nodeGraph:
+                  enabled: true
+                lokiSearch:
+                  datasourceUid: 'loki'
+
+          dashboards:
+            default:
+              tester:
+                gnetId: 1860
+                revision: 14
+                datasource: Prometheus
+              prometheus-stats:
+                gnetId: 2
+                revision: 2
+                datasource: Prometheus
+              kafka-exporter:
+                gnetId: 7589
+                revision: 5
+                datasource: Prometheus
+              jvm:
+                gnetIde: 4701
+                revision: 9
+                datasource: Prometheus
+              go:
+                gnetId: 6671
+                revision: 1
+                datasource: Prometheus
+              loki:
+                gnetId: 14055
+                revision: 5
+                datasource: Loki
+              loki-logs:
+                gnetId: 13639
+                revision: 2
+                datasource: Loki        
+              postgresql:
+                gnetId: 9628
+                revision: 7
+                datasource: Prometheus       
+
+          dashboardsConfigMaps: 
+            nghis: devops-dashboards
+             
+          grafana.ini:
+            feature_toggles:
+              traceqlEditor: true 
+              traceqlSearch: true
+              traceToMetrics: true
+              traceToLogs: true
+              tempoSearch: true
+              tempoServiceGraph: true
+              tempoApmTable: true
+              tempoBackendSearch: true
+            server:
+              root_url: https://grafana.dev.nghis.xxxke.sk/
+            auth.azuread:
+              allow_sign_up: true
+              auth_url: 
+              client_id: 
+              client_secret: 
+              enabled: true
+              name: Azure AD
+              scopes: openid email profile
+              token_url: 
+
+  syncPolicy:
+    automated:
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+  ignoreDifferences:
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+      jqPathExpressions:
+        - .spec.endpoints[]?.relabelings[]?.action
