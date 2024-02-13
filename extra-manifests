@@ -1,0 +1,1 @@
+{ ['extra-manifests-' + name]: kp.extraManifests[name] for name in std.objectFields(kp.extraManifests) }
