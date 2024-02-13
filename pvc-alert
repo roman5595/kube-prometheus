@@ -1,0 +1,28 @@
+{
+  prometheusRule: {
+    apiVersion: 'monitoring.coreos.com/v1',
+    kind: 'PrometheusRule',
+    metadata: {
+      name: 'PVCAlmostFullRule',
+    },
+    spec: {
+      groups: [
+        {
+          name: 'PvcAlmostFull',
+          rules: [
+            {
+              alert: 'PvcAlmostFull',
+              expr: 'vector(1)',
+              labels: {
+                severity: 'low',
+              },
+              annotations: {
+                description: 'Maybe too many alerts made your ear ring?',
+              },
+            },
+          ],
+        },
+      ],
+    },
+  },
+}
