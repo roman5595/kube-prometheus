@@ -1,0 +1,48 @@
+local k = import 'github.com/jsonnet-libs/k8s-libsonnet/1.22/main.libsonnet';
+local secret = k.core.v1.secret;
+
+local applyODPLabels = import 'custom/odp-labels.libsonnet';
+
+local kp = (import 'custom/dp-corebe.libsonnet') + {
+  values+:: {
+    odp+: {
+      prometheusDatasource: 'shs-prometheus-preprod',
+      environment: 'tui-dev-001',
+      metricsHostAddress: 'metrics.dev001.apl.eu.dp.odp.cloud.vwgroup.com',
+    },
+    alertmanager+: {
+      config: importstr 'custom/dp-corebe-tui-dev-001/alertmanager-config.yaml',
+    },
+  },
+  extraManifests: [
+    (import 'my-alert.jsonnet') + {
+      prometheusRule+: { metadata +: { namespace: $.values.common.namespace } },
+    },
+    (import 'my-alert2.jsonnet') + {
+      prometheusRule+: { metadata +: { namespace: $.values.common.namespace } },
+    },
+  ],
+};
+
+local additionalScrapeSecret = secret.new('additional-scrape-configs', {}) +
+  secret.mixin.withData({ 'additional-scrape-configs.yaml': std.base64(importstr "./dp-corebe-tui-dev-001/custom/prometheus-additional-scrape-config.yaml") }) +
+  secret.mixin.metadata.withNamespace(kp.values.namespace);
+
+applyODPLabels(
+  kp.prometheus.prometheus.spec.externalLabels,
+  { 
+    ['setup/prometheus-operator-' + name]: kp.prometheusOperator[name]
+    for name in std.filter((function(name) name != 'serviceMonitor' && name != 'prometheusRule'), std.objectFields(kp.prometheusOperator))
+  } +
+
+  // serviceMonitor and prometheusRule are separated so that they can be created after the CRDs are ready
+  { 'prometheus-operator-serviceMonitor': kp.prometheusOperator.serviceMonitor } +
+  { 'prometheus-operator-prometheusRule': kp.prometheusOperator.prometheusRule } +
+  { ['node-exporter-' + name]: kp.nodeExporter[name] for name in std.objectFields(kp.nodeExporter) } +
+  { ['kube-state-metrics-' + name]: kp.kubeStateMetrics[name] for name in std.objectFields(kp.kubeStateMetrics) } +
+  { ['alertmanager-' + name]: kp.alertmanager[name] for name in std.objectFields(kp.alertmanager) } +
+  { ['prometheus-' + name]: kp.prometheus[name] for name in std.objectFields(kp.prometheus) } +
+  { ['kubernetes-' + name]: kp.kubernetesControlPlane[name] for name in std.objectFields(kp.kubernetesControlPlane) } +
+  { ['extra-manifests-' + name]: kp.extraManifests[name] for name in std.range(0, std.length(kp.extraManifests) - 1) } +
+  { ['00secret-additional-scrape-conf']: additionalScrapeSecret }
+)
